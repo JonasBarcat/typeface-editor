@@ -1,0 +1,4 @@
+# Python 3.10 o más. El python3 del sistema (3.9) no puede instalar cursor-sdk.
+cursor-sdk>=1.0.31
+requests>=2.32
+python-dotenv>=1.0

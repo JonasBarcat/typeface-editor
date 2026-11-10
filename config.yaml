@@ -1,0 +1,21 @@
+# Modelo del agente. Una llamada por nota que no sea un tema repetido.
+# Se puede cambiar por otro id que acepte la cuenta.
+model: composer-2.5
+
+cms_url: https://cms.basetucuman.com
+
+# Último id ya resuelto. La corrida toma borradores con id mayor.
+state_path: state/last-id
+
+# Notas publicadas contra las que se comparan los temas repetidos.
+recent_published: 40
+
+# Título casi igual, o varias palabras fuertes compartidas entre título y copete
+# (un nombre, una cifra, una institución).
+duplicate_ratio: 0.84
+duplicate_shared_tokens: 6
+duplicate_strong_tokens: 2
+
+caption_max: 80
+max_attempts: 2
+work_dir: scratch
