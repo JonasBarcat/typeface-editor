@@ -28,8 +28,6 @@ export CMS_TOKEN=...
 
 `--dry-run` lee y arma el mensaje, sin guardar ni mover el último id.
 
-El último id queda en `state/last-id`. La corrida siguiente toma borradores con id mayor. En el workflow hay que conservar ese archivo entre corridas. Para repetir una nota, bajá el número.
+El último id queda en `state/last-id`. La corrida siguiente toma borradores con id mayor. En `shared-github-actions`, el job `typeface` del workflow `reporter` depende del job `reporter`, corre `python -m typeface once` y conserva ese archivo entre corridas. Para repetir una nota, bajá el número.
 
 Categorías: 1 Política, 2 Economía, 3 Deportes, 4 Sociedad, 5 Mundo.
-
-Todavía no está enganchado a `shared-github-actions`.
