@@ -60,7 +60,7 @@ def build_prompt(article: Article, problems: list[str], *, has_image: bool) -> s
         "Marcá fragmentos copiados carácter por carácter del cuerpo.",
         "Negrita: nombres propios clave, instituciones, cargos, cifras y datos duros.",
         "Itálica: citas textuales cortas y frases breves atribuidas, sin las comillas que las envuelven.",
-        "quotes: solo citas largas, de dos oraciones o varias cláusulas. Una frase corta no va en quotes.",
+        "quotes: solo citas largas, de dos oraciones o varias cláusulas. Una frase corta no va en quotes. Copiá el texto sin las comillas que lo envuelven: esas comillas se borran al pasar la cita a bloque.",
         "Categoría, un número: 1 Política (gobierno, partidos, elecciones, gestión), 2 Economía (precios, trabajo, producción, finanzas), 3 Deportes, 4 Sociedad (el resto, incluida la obra vial, salud, educación, seguridad, cultura), 5 Mundo (el eje está fuera de la Argentina).",
         "El pie de foto es una frase muy breve, en español rioplatense, de menos de 80 caracteres. No nombres al medio de origen.",
         'Forma: {"watermark": false, "watermark_source": "", "category_id": 4, "caption": "Pie.", "bold": [], "italic": [], "quotes": []}',

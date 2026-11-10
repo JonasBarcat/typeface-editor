@@ -89,6 +89,32 @@ class TypefaceTests(unittest.TestCase):
         self.assertEqual(kinds, ["paragraph", "quote", "paragraph"])
         self.assertEqual(plain_text(updated), plain_text(body))
 
+    def test_block_quote_drops_wrapping_quotation_marks(self):
+        quote = "Esta es una cita larga de prueba. Tiene dos oraciones y supera el umbral de una frase breve."
+        decision = normalize(Decision(quotes=[quote], category_id=4, caption="Nota."))
+
+        inline = paragraphs_to_body([f'Antes dijo: "{quote}" y siguió.'])
+        updated = apply_decision(inline, decision)
+        self.assertEqual(
+            [child["type"] for child in updated["root"]["children"]],
+            ["paragraph", "quote", "paragraph"],
+        )
+        self.assertEqual(
+            ["".join(node["text"] for node in child["children"]) for child in updated["root"]["children"]],
+            ["Antes dijo:", quote, "y siguió."],
+        )
+        self.assertNotIn('"', plain_text(updated))
+
+        own_lines = paragraphs_to_body(['"', quote, '"'])
+        updated = apply_decision(own_lines, decision)
+        self.assertEqual([child["type"] for child in updated["root"]["children"]], ["quote"])
+        self.assertEqual(plain_text(updated), quote)
+
+        spaced = paragraphs_to_body([f'" {quote} "'])
+        updated = apply_decision(spaced, decision)
+        self.assertEqual(plain_text(updated), quote)
+        self.assertEqual([child["type"] for child in updated["root"]["children"]], ["quote"])
+
     def test_missing_span_is_rejected(self):
         decision = normalize(Decision(bold=["este fragmento no existe"], category_id=4, caption="Nota."))
         updated = apply_decision(self.article.body, decision)
@@ -198,6 +224,7 @@ class TypefaceTests(unittest.TestCase):
         self.assertIn("No reescribas", prompt)
         self.assertIn("Héctor Aguer", prompt)
         self.assertIn("marca de agua", prompt)
+        self.assertIn("se borran", prompt)
 
     def test_cms_only_patches_drafts(self):
         session = Session()

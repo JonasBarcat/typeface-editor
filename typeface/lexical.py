@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 
 from typeface.decision import FORMAT_BOLD, FORMAT_ITALIC, Decision
 
@@ -25,7 +26,11 @@ def plain_text(body: dict) -> str:
 
 
 def apply_decision(body: dict, decision: Decision) -> dict:
-    """Aplica negrita, itálica y cita en bloque sin cambiar ni un carácter."""
+    """Aplica negrita, itálica y cita en bloque.
+
+    La única edición permitida es borrar las comillas que envolvían una cita
+    que pasó a bloque.
+    """
     original = plain_text(body)
     children: list[dict] = []
     for child in body["root"]["children"]:
@@ -38,12 +43,12 @@ def apply_decision(body: dict, decision: Decision) -> dict:
             continue
         for kind, part in _split_quotes(text, decision.quotes):
             if kind == "quote":
-                children.append(_block("quote", [_text_node(part, 0)]))
+                children.append(_block("quote", [_text_node(_strip_wrapped_quote(part), 0)]))
             else:
                 children.append(_block("paragraph", _inline_nodes(part, decision)))
     updated = copy.deepcopy(body)
-    updated["root"]["children"] = children
-    if plain_text(updated) != original:
+    updated["root"]["children"] = _unwrap_quote_marks(children, decision)
+    if not _same_except_wrappers(original, plain_text(updated)):
         raise RuntimeError("La tipografía cambió el texto. No se guarda.")
     return updated
 
@@ -57,8 +62,13 @@ def audit(body: dict, decision: Decision) -> list[str]:
     for needle in decision.italic:
         problems.extend(_mark_problems(body, full, needle, FORMAT_ITALIC, "itálica"))
     for quote in decision.quotes:
-        if not any(child.get("type") == "quote" and _node_text(child) == quote for child in body["root"]["children"]):
-            problems.append(f"la cita no quedó en bloque: «{_short(quote)}»")
+        visible = _strip_wrapped_quote(quote)
+        found = any(
+            child.get("type") == "quote" and _node_text(child) in {quote, visible}
+            for child in body["root"]["children"]
+        )
+        if not found:
+            problems.append(f"la cita no quedó en bloque: «{_short(visible)}»")
     return problems
 
 
@@ -95,6 +105,78 @@ def _coverage(body: dict, needle: str, bit: int) -> tuple[int, int]:
                 unmarked += 1
             start = index + len(needle)
     return occurrences, unmarked
+
+
+_QUOTE_CHARS = set('"“”«»„‟‘’\'')
+_TRAILING_WRAPPER = re.compile(r"""["“«„‟‘']\s*$""")
+_LEADING_WRAPPER = re.compile(r"""^\s*["”»’']""")
+
+
+def _unwrap_quote_marks(children: list[dict], decision: Decision) -> list[dict]:
+    """Saca las comillas pegadas a una cita en bloque, incluso si están en otro párrafo."""
+    cleaned: list[dict] = []
+    for index, child in enumerate(children):
+        if child.get("type") == "quote":
+            text = _strip_wrapped_quote(_node_text(child))
+            cleaned.append(_block("quote", [_text_node(text, 0)]) if text != _node_text(child) else child)
+            continue
+        if child.get("type") != "paragraph":
+            cleaned.append(child)
+            continue
+        text = _node_text(child)
+        next_is_quote = index + 1 < len(children) and children[index + 1].get("type") == "quote"
+        prev_is_quote = bool(cleaned) and cleaned[-1].get("type") == "quote"
+        if next_is_quote:
+            text = _strip_trailing_wrapper(text)
+        if prev_is_quote:
+            text = _strip_leading_wrapper(text)
+        if text.strip() == "":
+            continue
+        if text == _node_text(child):
+            cleaned.append(child)
+        else:
+            cleaned.append(_block("paragraph", _inline_nodes(text, decision)))
+    return cleaned
+
+
+def _strip_trailing_wrapper(text: str) -> str:
+    match = _TRAILING_WRAPPER.search(text)
+    if not match:
+        return text
+    return text[: match.start()].rstrip()
+
+
+def _strip_leading_wrapper(text: str) -> str:
+    match = _LEADING_WRAPPER.match(text)
+    if not match:
+        return text
+    return text[match.end() :].lstrip()
+
+
+def _strip_wrapped_quote(text: str) -> str:
+    if len(text) < 2 or text[0] not in _QUOTE_CHARS or text[-1] not in _QUOTE_CHARS:
+        return text
+    inner = text[1:-1].strip()
+    return inner or text
+
+
+def _same_except_wrappers(before: str, after: str) -> bool:
+    """El texto nuevo solo puede haber perdido comillas y el espacio que las separaba de la cita."""
+    index = 0
+    for position, char in enumerate(before):
+        if index < len(after) and after[index] == char:
+            index += 1
+            continue
+        if char in _QUOTE_CHARS or (char.isspace() and _space_touches_quote(before, position)):
+            continue
+        return False
+    return index == len(after)
+
+
+def _space_touches_quote(text: str, position: int) -> bool:
+    previous = next((char for char in reversed(text[:position]) if not char.isspace()), "")
+    following = next((char for char in text[position + 1 :] if not char.isspace()), "")
+    return previous in _QUOTE_CHARS or following in _QUOTE_CHARS
 
 
 def _split_quotes(text: str, quotes: list[str]) -> list[tuple[str, str]]:
