@@ -7,6 +7,7 @@ FORMAT_BOLD = 1
 FORMAT_ITALIC = 2
 
 _SENTENCE_END = re.compile(r"[.!?…]+")
+MAX_BLOCK_QUOTES = 2
 
 
 @dataclass
@@ -60,6 +61,7 @@ def is_long_quote(text: str) -> bool:
 
 
 def normalize(decision: Decision) -> Decision:
+    """Una frase corta pasa a itálica. En bloque quedan como máximo dos citas largas."""
     italic = _unique(item.strip() for item in decision.italic if len(item.strip()) >= 2)
     quotes: list[str] = []
     for raw in decision.quotes:
@@ -67,8 +69,10 @@ def normalize(decision: Decision) -> Decision:
         if len(quote) < 2:
             continue
         if is_long_quote(quote):
-            quotes.append(quote)
-        elif quote not in italic:
+            if len(quotes) < MAX_BLOCK_QUOTES:
+                quotes.append(quote)
+            continue
+        if quote not in italic:
             italic.append(quote)
     return Decision(
         watermark=decision.watermark,

@@ -28,12 +28,13 @@ def plain_text(body: dict) -> str:
 def apply_decision(body: dict, decision: Decision) -> dict:
     """Aplica negrita, itálica y cita en bloque.
 
-    La única edición permitida es borrar las comillas que envolvían una cita
-    que pasó a bloque.
+    Además de las comillas de una cita que pasó a bloque, se puede omitir el
+    signo de puntuación que queda suelto y, si después del bloque solo hay
+    una, dos o tres palabras, ese resto.
     """
-    original = plain_text(body)
+    original_children = body["root"]["children"]
     children: list[dict] = []
-    for child in body["root"]["children"]:
+    for child in original_children:
         if child.get("type") not in _BLOCK_TYPES:
             children.append(copy.deepcopy(child))
             continue
@@ -48,7 +49,9 @@ def apply_decision(body: dict, decision: Decision) -> dict:
                 children.append(_block("paragraph", _inline_nodes(part, decision)))
     updated = copy.deepcopy(body)
     updated["root"]["children"] = _unwrap_quote_marks(children, decision)
-    if not _same_except_wrappers(original, plain_text(updated)):
+    before = _joined(original_children)
+    after = _joined(updated["root"]["children"])
+    if not _same_except_wrappers(before, after, decision.quotes):
         raise RuntimeError("La tipografía cambió el texto. No se guarda.")
     return updated
 
@@ -108,29 +111,41 @@ def _coverage(body: dict, needle: str, bit: int) -> tuple[int, int]:
 
 
 _QUOTE_CHARS = set('"“”«»„‟‘’\'')
+_DEBRIS_PUNCT = set(",.;:…?!")
 _TRAILING_WRAPPER = re.compile(r"""["“«„‟‘']\s*$""")
 _LEADING_WRAPPER = re.compile(r"""^\s*["”»’']""")
+_LEADING_DEBRIS = re.compile(r"^(?:[\s,.;:…?!]*[,.;:…?!][\s,.;:…?!]*)")
+_SENTINEL = "\u0001"
+_SHORT_TAIL = 3
 
 
 def _unwrap_quote_marks(children: list[dict], decision: Decision) -> list[dict]:
-    """Saca las comillas pegadas a una cita en bloque, incluso si están en otro párrafo."""
+    """Saca comillas, signos sueltos y un resto de hasta tres palabras después de un bloque."""
     cleaned: list[dict] = []
+    tail_open = False
     for index, child in enumerate(children):
         if child.get("type") == "quote":
             text = _strip_wrapped_quote(_node_text(child))
             cleaned.append(_block("quote", [_text_node(text, 0)]) if text != _node_text(child) else child)
+            tail_open = True
             continue
         if child.get("type") != "paragraph":
             cleaned.append(child)
+            tail_open = False
             continue
         text = _node_text(child)
         next_is_quote = index + 1 < len(children) and children[index + 1].get("type") == "quote"
-        prev_is_quote = bool(cleaned) and cleaned[-1].get("type") == "quote"
         if next_is_quote:
             text = _strip_trailing_wrapper(text)
-        if prev_is_quote:
+        if tail_open:
             text = _strip_leading_wrapper(text)
-        if text.strip() == "":
+            text = _strip_leading_debris(text)
+            if _word_count(text) <= _SHORT_TAIL:
+                if _word_count(text) > 0:
+                    tail_open = False
+                continue
+            tail_open = False
+        elif text.strip() == "":
             continue
         if text == _node_text(child):
             cleaned.append(child)
@@ -147,10 +162,26 @@ def _strip_trailing_wrapper(text: str) -> str:
 
 
 def _strip_leading_wrapper(text: str) -> str:
+    """Saca la comilla de cierre que quedó pegada. No toca una cita que empieza de nuevo."""
     match = _LEADING_WRAPPER.match(text)
     if not match:
         return text
-    return text[match.end() :].lstrip()
+    rest = text[match.end() :].lstrip()
+    if rest == "":
+        return ""
+    first = rest[0]
+    if first.isupper() or first.isdigit() or first in "¿¡«":
+        return text
+    return rest
+
+
+def _strip_leading_debris(text: str) -> str:
+    """Saca la coma, el punto u otro signo que quedó al frente del párrafo siguiente."""
+    return _LEADING_DEBRIS.sub("", text, count=1)
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"\S+", text))
 
 
 def _strip_wrapped_quote(text: str) -> str:
@@ -160,23 +191,118 @@ def _strip_wrapped_quote(text: str) -> str:
     return inner or text
 
 
-def _same_except_wrappers(before: str, after: str) -> bool:
-    """El texto nuevo solo puede haber perdido comillas y el espacio que las separaba de la cita."""
-    index = 0
-    for position, char in enumerate(before):
-        if index < len(after) and after[index] == char:
-            index += 1
+def _joined(children: list[dict]) -> str:
+    return _SENTINEL.join(_node_text(child) for child in children)
+
+
+def _same_except_wrappers(before: str, after: str, quotes: list[str]) -> bool:
+    """El texto nuevo solo puede haber perdido comillas, un signo suelto o un resto de hasta tres palabras."""
+    return _align(before, after, 0, 0, quotes)
+
+
+def _align(before: str, after: str, i: int, j: int, quotes: list[str]) -> bool:
+    while i < len(before) or j < len(after):
+        if i < len(before) and before[i] == _SENTINEL:
+            i += 1
             continue
-        if char in _QUOTE_CHARS or (char.isspace() and _space_touches_quote(before, position)):
+        if j < len(after) and after[j] == _SENTINEL:
+            j += 1
+            continue
+        if i < len(before) and j < len(after) and before[i] == after[j]:
+            i += 1
+            j += 1
+            continue
+        if i < len(before) and before[i] in _QUOTE_CHARS:
+            i += 1
+            continue
+        if i < len(before) and before[i].isspace() and _space_touches_quote(before, i):
+            i += 1
+            continue
+        span = _tail_span(before, after, i, j, quotes)
+        if span:
+            i += span
             continue
         return False
-    return index == len(after)
+    return True
+
+
+def _tail_span(before: str, after: str, i: int, j: int, quotes: list[str]) -> int:
+    if i >= len(before) or not _at_quote_edge(before, i, quotes):
+        return 0
+    end = i
+    while end < len(before) and (before[end].isspace() or before[end] in _DEBRIS_PUNCT):
+        end += 1
+    candidates = [end] if end > i else []
+    words = 0
+    while words < _SHORT_TAIL and end < len(before):
+        if before[end].isspace() or before[end] == _SENTINEL or before[end] in _DEBRIS_PUNCT:
+            break
+        while end < len(before) and not before[end].isspace() and before[end] != _SENTINEL:
+            end += 1
+        words += 1
+        while end < len(before) and before[end].isspace():
+            end += 1
+        candidates.append(end)
+    for candidate in candidates:
+        if _align(before, after, candidate, j, quotes):
+            return candidate - i
+    return 0
+
+
+def _at_quote_edge(text: str, position: int, quotes: list[str]) -> bool:
+    if _follows_quote_boundary(text, position):
+        return True
+    for quote in quotes:
+        if len(quote) < 2:
+            continue
+        start = 0
+        while True:
+            found = text.find(quote, start)
+            if found < 0:
+                break
+            if _only_debris_between(text, found + len(quote), position):
+                return True
+            start = found + 1
+    return False
+
+
+def _follows_quote_boundary(text: str, position: int) -> bool:
+    index = position - 1
+    while index >= 0:
+        char = text[index]
+        if char in _QUOTE_CHARS:
+            return True
+        if char == _SENTINEL or char.isspace() or char in _DEBRIS_PUNCT:
+            index -= 1
+            continue
+        return False
+    return False
+
+
+def _only_debris_between(text: str, start: int, end: int) -> bool:
+    if end < start:
+        return False
+    for index in range(start, end):
+        char = text[index]
+        if char in _QUOTE_CHARS or char == _SENTINEL or char.isspace() or char in _DEBRIS_PUNCT:
+            continue
+        return False
+    return True
 
 
 def _space_touches_quote(text: str, position: int) -> bool:
-    previous = next((char for char in reversed(text[:position]) if not char.isspace()), "")
-    following = next((char for char in text[position + 1 :] if not char.isspace()), "")
+    previous = _significant(text, position, -1)
+    following = _significant(text, position, 1)
     return previous in _QUOTE_CHARS or following in _QUOTE_CHARS
+
+
+def _significant(text: str, position: int, step: int) -> str:
+    index = position + step
+    while 0 <= index < len(text) and (text[index].isspace() or text[index] == _SENTINEL):
+        index += step
+    if 0 <= index < len(text):
+        return text[index]
+    return ""
 
 
 def _split_quotes(text: str, quotes: list[str]) -> list[tuple[str, str]]:

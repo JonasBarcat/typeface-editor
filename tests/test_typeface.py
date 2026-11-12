@@ -21,6 +21,13 @@ from typeface.summary import Report, render
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "fixtures" / "article-938.json"
 DECISIONS = ROOT / "fixtures" / "article-938-decisions.json"
+QUOTE = "Esta es una cita larga de prueba. Tiene dos oraciones y supera el umbral de una frase breve."
+
+
+def block_text(node: dict) -> str:
+    if node.get("type") == "text":
+        return str(node.get("text") or "")
+    return "".join(block_text(child) for child in node.get("children") or [])
 
 
 class Response:
@@ -59,7 +66,13 @@ class TypefaceTests(unittest.TestCase):
         self.assertEqual(plain_text(updated), plain_text(self.article.body))
         self.assertEqual(audit(updated, self.decision), [])
         quotes = [child for child in updated["root"]["children"] if child["type"] == "quote"]
-        self.assertEqual(len(quotes), 5)
+        self.assertEqual(len(quotes), 2)
+        self.assertEqual([block_text(quote) for quote in quotes], self.decision.quotes)
+        third = "3. Yo pienso como Aristóteles"
+        self.assertNotIn(third, "".join(self.decision.italic))
+        self.assertTrue(
+            any(child["type"] == "paragraph" and third in block_text(child) for child in updated["root"]["children"])
+        )
         for quote in quotes:
             self.assertTrue(all(node["format"] == 0 for node in quote["children"]))
         again = apply_decision(updated, self.decision)
@@ -80,9 +93,11 @@ class TypefaceTests(unittest.TestCase):
         self.assertEqual(audit(updated, decision), [])
 
     def test_long_quote_splits_a_paragraph(self):
-        quote = "Esta es una cita larga de prueba. Tiene dos oraciones y supera el umbral de una frase breve."
+        quote = QUOTE
         self.assertTrue(is_long_quote(quote))
-        body = paragraphs_to_body([f"Antes dijo esto. {quote} Después cerró."])
+        body = paragraphs_to_body(
+            [f"Antes dijo esto. {quote} Después cerró el acto y se retiró del lugar."]
+        )
         decision = normalize(Decision(quotes=[quote], category_id=4, caption="Nota."))
         updated = apply_decision(body, decision)
         kinds = [child["type"] for child in updated["root"]["children"]]
@@ -90,20 +105,25 @@ class TypefaceTests(unittest.TestCase):
         self.assertEqual(plain_text(updated), plain_text(body))
 
     def test_block_quote_drops_wrapping_quotation_marks(self):
-        quote = "Esta es una cita larga de prueba. Tiene dos oraciones y supera el umbral de una frase breve."
+        quote = QUOTE
         decision = normalize(Decision(quotes=[quote], category_id=4, caption="Nota."))
 
-        inline = paragraphs_to_body([f'Antes dijo: "{quote}" y siguió.'])
+        inline = paragraphs_to_body(
+            [f'Antes dijo: "{quote}" y siguió con el relato durante varios minutos.']
+        )
         updated = apply_decision(inline, decision)
         self.assertEqual(
-            [child["type"] for child in updated["root"]["children"]],
-            ["paragraph", "quote", "paragraph"],
-        )
-        self.assertEqual(
-            ["".join(node["text"] for node in child["children"]) for child in updated["root"]["children"]],
-            ["Antes dijo:", quote, "y siguió."],
+            [block_text(child) for child in updated["root"]["children"]],
+            ["Antes dijo:", quote, "y siguió con el relato durante varios minutos."],
         )
         self.assertNotIn('"', plain_text(updated))
+
+        short_tail = paragraphs_to_body([f'Antes dijo: "{quote}" y siguió.'])
+        updated = apply_decision(short_tail, decision)
+        self.assertEqual(
+            [block_text(child) for child in updated["root"]["children"]],
+            ["Antes dijo:", quote],
+        )
 
         own_lines = paragraphs_to_body(['"', quote, '"'])
         updated = apply_decision(own_lines, decision)
@@ -114,6 +134,78 @@ class TypefaceTests(unittest.TestCase):
         updated = apply_decision(spaced, decision)
         self.assertEqual(plain_text(updated), quote)
         self.assertEqual([child["type"] for child in updated["root"]["children"]], ["quote"])
+
+    def test_punctuation_stuck_to_a_block_is_omitted(self):
+        quote = QUOTE
+        decision = normalize(Decision(quotes=[quote], category_id=4, caption="Nota."))
+
+        comma_line = paragraphs_to_body([f'"{quote}"', ",", "dijo en la previa de los amistosos que disputará su equipo."])
+        updated = apply_decision(comma_line, decision)
+        self.assertEqual(
+            [block_text(child) for child in updated["root"]["children"]],
+            [quote, "dijo en la previa de los amistosos que disputará su equipo."],
+        )
+
+        period_line = paragraphs_to_body([f'"{quote}"', "."])
+        updated = apply_decision(period_line, decision)
+        self.assertEqual([block_text(child) for child in updated["root"]["children"]], [quote])
+
+        same_paragraph = paragraphs_to_body([f'"{quote}", era el texto que ya no figura en la plataforma.'])
+        updated = apply_decision(same_paragraph, decision)
+        self.assertEqual(
+            [block_text(child) for child in updated["root"]["children"]],
+            [quote, "era el texto que ya no figura en la plataforma."],
+        )
+
+        broken_line = paragraphs_to_body([f'"{quote}"\n, decía esa versión inicial impresa para los fieles.'])
+        updated = apply_decision(broken_line, decision)
+        self.assertEqual(
+            [block_text(child) for child in updated["root"]["children"]],
+            [quote, "decía esa versión inicial impresa para los fieles."],
+        )
+
+        new_quote = paragraphs_to_body(
+            [f'"{quote}"', ".", '"Estamos al lado de cada paraguayo que está sufriendo", sostuvo el director.']
+        )
+        updated = apply_decision(new_quote, decision)
+        self.assertEqual(
+            [block_text(child) for child in updated["root"]["children"]],
+            [quote, '"Estamos al lado de cada paraguayo que está sufriendo", sostuvo el director.'],
+        )
+
+    def test_one_to_three_words_after_a_block_are_omitted(self):
+        quote = QUOTE
+        decision = normalize(Decision(quotes=[quote], category_id=4, caption="Nota."))
+
+        for tail in ("dijo.", "sostuvo.", "sostuvo el técnico."):
+            body = paragraphs_to_body([f'Antes dijo: "{quote}", {tail}'])
+            updated = apply_decision(body, decision)
+            self.assertEqual(
+                [block_text(child) for child in updated["root"]["children"]],
+                ["Antes dijo:", quote],
+                tail,
+            )
+
+        kept = paragraphs_to_body([f'"{quote}", sostuvo el director técnico.'])
+        updated = apply_decision(kept, decision)
+        self.assertEqual(
+            [block_text(child) for child in updated["root"]["children"]],
+            [quote, "sostuvo el director técnico."],
+        )
+
+    def test_extra_block_quotes_stay_in_the_paragraph(self):
+        first = QUOTE
+        second = "Otra cita larga de prueba. También tiene dos oraciones y no puede ir en itálica por el largo."
+        third = "Una tercera cita larga. Tiene dos oraciones y debe seguir en el párrafo, sin bloque."
+        self.assertTrue(all(is_long_quote(item) for item in (first, second, third)))
+        decision = normalize(Decision(quotes=[first, second, third], category_id=4, caption="Nota."))
+        self.assertEqual(decision.quotes, [first, second])
+        self.assertNotIn(third, decision.italic)
+        body = paragraphs_to_body([first, second, third])
+        updated = apply_decision(body, decision)
+        kinds = [child["type"] for child in updated["root"]["children"]]
+        self.assertEqual(kinds, ["quote", "quote", "paragraph"])
+        self.assertEqual(plain_text(updated), plain_text(body))
 
     def test_missing_span_is_rejected(self):
         decision = normalize(Decision(bold=["este fragmento no existe"], category_id=4, caption="Nota."))
@@ -225,6 +317,8 @@ class TypefaceTests(unittest.TestCase):
         self.assertIn("Héctor Aguer", prompt)
         self.assertIn("marca de agua", prompt)
         self.assertIn("se borran", prompt)
+        self.assertIn("como máximo dos", prompt)
+        self.assertIn("tres palabras", prompt)
 
     def test_cms_only_patches_drafts(self):
         session = Session()
