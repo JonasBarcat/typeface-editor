@@ -13,7 +13,7 @@ from typeface.decision import Decision, is_long_quote, normalize, polish_caption
 from typeface.duplicates import Story, is_duplicate
 from typeface.editor import build_prompt
 from typeface.errors import TypefaceError
-from typeface.lexical import apply_decision, audit, paragraphs_to_body, plain_text
+from typeface.lexical import apply_decision, audit, paragraphs_to_body, plain_text, reconcile
 from typeface.payload import article_patch
 from typeface.pipeline import prepare, process
 from typeface.summary import Report, render
@@ -206,6 +206,51 @@ class TypefaceTests(unittest.TestCase):
         kinds = [child["type"] for child in updated["root"]["children"]]
         self.assertEqual(kinds, ["quote", "quote", "paragraph"])
         self.assertEqual(plain_text(updated), plain_text(body))
+
+    def test_marks_trapped_in_a_block_quote_do_not_reject_the_note(self):
+        quote = (
+            "Desde el programa Paisaje Productivo Protegido se definió una potencia ambiental. "
+            "Nicolás Bronzovich, el Dr. Ariel Pereda y el Ing. Agr. Luis Erazzú cerraron el trato entre mayo y agosto."
+        )
+        missing = (
+            "Desde el programa Paisaje Productivo Protegido esta versión no está en la nota. "
+            "Tiene dos oraciones y el modelo la copió mal."
+        )
+        self.assertTrue(is_long_quote(quote))
+        self.assertTrue(is_long_quote(missing))
+        body = paragraphs_to_body(
+            [
+                f'El cierre quedó así: "{quote}"',
+                "El equipo sigue el trabajo en la provincia durante el resto del año.",
+            ]
+        )
+        article = replace(self.article, body=body, media_id=1)
+        decision = Decision(
+            quotes=[quote, missing],
+            bold=["Nicolás Bronzovich", "Dr. Ariel Pereda", "Ing. Agr. Luis Erazzú", "mayo", "agosto"],
+            italic=["potencia ambiental"],
+            category_id=4,
+            caption="Cierre del programa",
+        )
+        patch, caption = prepare(article, decision, self.cfg)
+        self.assertEqual(caption, "Cierre del programa.")
+        quotes = [child for child in patch["body"]["root"]["children"] if child["type"] == "quote"]
+        self.assertEqual([block_text(item) for item in quotes], [quote])
+        self.assertIn("provincia", plain_text(patch["body"]))
+
+        inner = (
+            "Nicolás Bronzovich explicó el programa con detalle suficiente para una cita. "
+            "Cerró con una segunda oración concreta."
+        )
+        outer = inner + " Después sumó el contexto de toda la región y del acuerdo firmado."
+        nested = paragraphs_to_body([outer])
+        settled = reconcile(
+            nested,
+            normalize(Decision(quotes=[outer, inner], category_id=4, caption="Nota.")),
+        )
+        self.assertEqual(settled.quotes, [outer])
+        updated = apply_decision(nested, settled)
+        self.assertEqual(audit(updated, settled), [])
 
     def test_missing_span_is_rejected(self):
         decision = normalize(Decision(bold=["este fragmento no existe"], category_id=4, caption="Nota."))

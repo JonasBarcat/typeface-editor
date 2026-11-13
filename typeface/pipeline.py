@@ -9,7 +9,7 @@ from typeface.config import Config
 from typeface.decision import Decision, normalize, polish_caption
 from typeface.duplicates import Story, find_duplicate
 from typeface.errors import TypefaceError
-from typeface.lexical import apply_decision, audit
+from typeface.lexical import apply_decision, audit, reconcile
 from typeface.payload import article_patch
 from typeface.summary import Report
 
@@ -96,7 +96,7 @@ def process(
 def prepare(article: Article, decision: Decision, cfg: Config) -> tuple[dict, str | None]:
     if decision.watermark:
         raise TypefaceError("la nota tiene marca de agua y no se edita")
-    normalized = normalize(decision)
+    normalized = reconcile(article.body, normalize(decision))
     try:
         _category_name(normalized.category_id)
     except ValueError as exc:

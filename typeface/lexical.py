@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 
 from typeface.decision import FORMAT_BOLD, FORMAT_ITALIC, Decision
+
+log = logging.getLogger(__name__)
 
 _BLOCK_TYPES = {"paragraph", "quote"}
 
@@ -56,6 +59,25 @@ def apply_decision(body: dict, decision: Decision) -> dict:
     return updated
 
 
+def reconcile(body: dict, decision: Decision) -> Decision:
+    """Deja una decisión que se puede aplicar sin rechazar la nota.
+
+    Una cita que no está en el texto, o que ya entra en otra cita, se omite.
+    La negrita y la itálica que solo viven dentro de un bloque también se omiten:
+    pedirle al modelo que las saque suele hacer que la cita deje de coincidir.
+    """
+    quotes = _placeable_quotes(body, decision.quotes)
+    return Decision(
+        watermark=decision.watermark,
+        watermark_source=decision.watermark_source,
+        category_id=decision.category_id,
+        caption=decision.caption,
+        bold=_marks_outside_quotes(body, decision.bold, quotes, "negrita"),
+        italic=_marks_outside_quotes(body, decision.italic, quotes, "itálica"),
+        quotes=quotes,
+    )
+
+
 def audit(body: dict, decision: Decision) -> list[str]:
     """Comprueba que cada fragmento pedido haya quedado con su formato."""
     problems: list[str] = []
@@ -73,6 +95,87 @@ def audit(body: dict, decision: Decision) -> list[str]:
         if not found:
             problems.append(f"la cita no quedó en bloque: «{_short(visible)}»")
     return problems
+
+
+def _placeable_quotes(body: dict, quotes: list[str]) -> list[str]:
+    blocks = _editable_texts(body)
+    found: list[str] = []
+    for quote in quotes:
+        visible = _strip_wrapped_quote(quote)
+        if any(quote in block for block in blocks):
+            chosen = quote
+        elif visible != quote and any(visible in block for block in blocks):
+            chosen = visible
+        else:
+            log.warning("cita omitida, no está en el texto: «%s»", _short(visible))
+            continue
+        if chosen not in found:
+            found.append(chosen)
+    kept: list[str] = []
+    for quote in found:
+        longer = [other for other in found if len(other) > len(quote)]
+        if longer and not _occurs_outside_blocks(blocks, quote, longer):
+            log.info("cita omitida, ya está dentro de otra: «%s»", _short(quote))
+            continue
+        kept.append(quote)
+    return kept
+
+
+def _occurs_outside_blocks(blocks: list[str], needle: str, quotes: list[str]) -> bool:
+    return any(_occurs_outside(block, needle, _quote_spans(block, quotes)) for block in blocks)
+
+
+def _marks_outside_quotes(body: dict, needles: list[str], quotes: list[str], label: str) -> list[str]:
+    full = plain_text(body)
+    spans = _quote_spans(full, quotes)
+    kept: list[str] = []
+    for needle in needles:
+        if needle in full and not _occurs_outside(full, needle, spans):
+            log.info("«%s» solo está dentro de una cita en bloque; no va en %s", _short(needle), label)
+            continue
+        kept.append(needle)
+    return kept
+
+
+def _editable_texts(body: dict) -> list[str]:
+    texts = []
+    for child in body.get("root", {}).get("children", []):
+        if child.get("type") not in _BLOCK_TYPES:
+            continue
+        text = _node_text(child)
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _quote_spans(text: str, quotes: list[str]) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for quote in quotes:
+        variants = [quote]
+        visible = _strip_wrapped_quote(quote)
+        if visible != quote:
+            variants.append(visible)
+        for variant in variants:
+            start = 0
+            while variant:
+                index = text.find(variant, start)
+                if index < 0:
+                    break
+                spans.append((index, index + len(variant)))
+                start = index + len(variant)
+    return spans
+
+
+def _occurs_outside(text: str, needle: str, spans: list[tuple[int, int]]) -> bool:
+    start = 0
+    while True:
+        index = text.find(needle, start)
+        if index < 0:
+            return False
+        end = index + len(needle)
+        if not any(span_start <= index and end <= span_end for span_start, span_end in spans):
+            return True
+        start = end
 
 
 def _mark_problems(body: dict, full: str, needle: str, bit: int, label: str) -> list[str]:

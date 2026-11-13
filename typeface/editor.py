@@ -9,7 +9,7 @@ from typeface.article import Article
 from typeface.config import Config
 from typeface.decision import Decision, normalize
 from typeface.errors import TypefaceError
-from typeface.lexical import apply_decision, audit, plain_text
+from typeface.lexical import apply_decision, audit, plain_text, reconcile
 
 _PARAGRAPH_TYPES = {"paragraph", "quote", "heading"}
 
@@ -31,7 +31,7 @@ def decide(cfg: Config, article: Article, image: bytes | None, mime: str | None)
         last = _decision_from_payload(payload, article.category_id)
         if last.watermark:
             return Decision(watermark=True, watermark_source=last.watermark_source, category_id=article.category_id)
-        normalized = normalize(last)
+        normalized = reconcile(article.body, normalize(last))
         try:
             updated = apply_decision(article.body, normalized)
             problems = audit(updated, normalized)
@@ -58,8 +58,8 @@ def build_prompt(article: Article, problems: list[str], *, has_image: bool) -> s
         "Sos el editor tipográfico de Base Tucumán. No reescribas: no cambies ni una palabra, ni el título, ni el sentido.",
         "No uses herramientas. Respondé solo con un objeto JSON.",
         "Marcá fragmentos copiados carácter por carácter del cuerpo.",
-        "Negrita: nombres propios clave, instituciones, cargos, cifras y datos duros. No marques el resto corto que queda después de un bloque: ese resto no se publica.",
-        "Itálica: citas textuales cortas y frases breves atribuidas, sin las comillas que las envuelven.",
+        "Negrita: nombres propios clave, instituciones, cargos, cifras y datos duros. No marques el resto corto que queda después de un bloque: ese resto no se publica. Si el dato solo está dentro de una cita en bloque, no lo marques.",
+        "Itálica: citas textuales cortas y frases breves atribuidas, sin las comillas que las envuelven. Si la frase solo está dentro de una cita en bloque, no la marques.",
         "quotes: como máximo dos por nota, y solo si esa cita es el eje. Ordenalas de la más relevante a la menos: si mandás más de dos, se usan las dos primeras. Si hay varias citas de peso parecido, dejá quotes vacío. No llenes la nota de bloques. Una frase corta no va en quotes.",
         "No pases a bloque una cita si al sacarla queda un signo suelto (coma, punto, dos puntos, punto y coma, signos de exclamación o pregunta) o una, dos o tres palabras. Ese resto queda solo en una línea y no se publica.",
         "Copiá la cita sin las comillas que la envuelven: esas comillas se borran al pasar la cita a bloque.",
